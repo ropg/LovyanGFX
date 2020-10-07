@@ -39,7 +39,8 @@
  #if ESP_IDF_VERSION_MAJOR > 3
   #include <esp32/rom/miniz.h>
  #else
-  #include <rom/miniz.h>
+  //#include <rom/miniz.h>
+  #include "miniz.h"
  #endif
 #else
  #include "miniz.h"

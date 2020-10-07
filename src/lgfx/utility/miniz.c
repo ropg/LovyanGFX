@@ -155,8 +155,7 @@
      uses the 64-bit variants: fopen64(), stat64(), etc. Otherwise you won't be able to process large files
      (i.e. 32-bit stat() fails for me on files > 0x7FFFFFFF bytes).
 */
-#if !defined(ESP32)
-#ifndef MINIZ_HEADER_INCLUDED &&
+#ifndef MINIZ_HEADER_INCLUDED
 #define MINIZ_HEADER_INCLUDED
 
 #include <stdlib.h>
@@ -191,7 +190,7 @@
 //#define MINIZ_NO_MALLOC
 
 //
-#define MINIZ_NO_COMPRESSION
+//#define MINIZ_NO_COMPRESSION
 
 
 #if defined(__TINYC__) && (defined(__linux) || defined(__linux__))
@@ -951,9 +950,16 @@ typedef unsigned char mz_validate_uint64[sizeof(mz_uint64)==8 ? 1 : -1];
   #define MZ_FREE(x) (void)x, ((void)0)
   #define MZ_REALLOC(p, x) NULL
 #else
+  #ifdef BOARD_HAS_PSRAM
+  #include <Arduino.h>
+  #define MZ_MALLOC(x) ps_malloc(x)
+  #define MZ_FREE(x) free(x)
+  #define MZ_REALLOC(p, x) ps_realloc(p, x)
+  #else
   #define MZ_MALLOC(x) malloc(x)
   #define MZ_FREE(x) free(x)
   #define MZ_REALLOC(p, x) realloc(p, x)
+  #endif
 #endif
 
 #define MZ_MAX(a,b) (((a)>(b))?(a):(b))
@@ -4905,7 +4911,6 @@ void *mz_zip_extract_archive_file_to_heap(const char *pZip_filename, const char 
 #endif
 
 #endif // MINIZ_HEADER_FILE_ONLY
-#endif // !defined(ESP32)
 /*
   This is free and unencumbered software released into the public domain.
 
