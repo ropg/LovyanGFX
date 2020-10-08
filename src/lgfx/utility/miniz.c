@@ -946,21 +946,35 @@ typedef unsigned char mz_validate_uint64[sizeof(mz_uint64)==8 ? 1 : -1];
 #define MZ_ASSERT(x) assert(x)
 
 #ifdef MINIZ_NO_MALLOC
+  #define MINIZ_NO_COMPRESSION
+  // for reading
   #define MZ_MALLOC(x) NULL
   #define MZ_FREE(x) (void)x, ((void)0)
   #define MZ_REALLOC(p, x) NULL
+  // for writing
+  #define MZ_MALLOC2(x) NULL
+  #define MZ_FREE2(x) (void)x, ((void)0)
+  #define MZ_REALLOC2(p, x) NULL
 #else
+  // for reading
+  #define MZ_MALLOC(x) malloc(x)
+  #define MZ_FREE(x) free(x)
+  #define MZ_REALLOC(p, x) realloc(p, x)
+
   #ifdef BOARD_HAS_PSRAM
+    // enable writing only if psram found
     #include "esp_spiram.h"
     #include "soc/efuse_reg.h"
     #include "esp_heap_caps.h"
-    #define MZ_MALLOC(x) heap_caps_malloc(x, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
-    #define MZ_FREE(x) free(x)
-    #define MZ_REALLOC(p, x) heap_caps_realloc(p, x, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+    #define MZ_MALLOC2(x) heap_caps_malloc(x, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+    #define MZ_FREE2(x) free(x)
+    #define MZ_REALLOC2(p, x) heap_caps_realloc(p, x, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
   #else
-    #define MZ_MALLOC(x) malloc(x)
-    #define MZ_FREE(x) free(x)
-    #define MZ_REALLOC(p, x) realloc(p, x)
+    // disable writing and save some ram too
+    #define MINIZ_NO_COMPRESSION
+    #define MZ_MALLOC2(x) NULL
+    #define MZ_FREE2(x) (void)x, ((void)0)
+    #define MZ_REALLOC2(p, x) NULL
   #endif
 #endif
 
@@ -1023,9 +1037,14 @@ void mz_free(void *p)
 
 #ifndef MINIZ_NO_ZLIB_APIS
 
+// for reading
 static void *def_alloc_func(void *opaque, size_t items, size_t size) { (void)opaque, (void)items, (void)size; return MZ_MALLOC(items * size); }
 static void def_free_func(void *opaque, void *address) { (void)opaque, (void)address; MZ_FREE(address); }
 static void *def_realloc_func(void *opaque, void *address, size_t items, size_t size) { (void)opaque, (void)address, (void)items, (void)size; return MZ_REALLOC(address, items * size); }
+// for writing
+static void *def_alloc_func2(void *opaque, size_t items, size_t size) { (void)opaque, (void)items, (void)size; return MZ_MALLOC2(items * size); }
+static void def_free_func2(void *opaque, void *address) { (void)opaque, (void)address; MZ_FREE2(address); }
+static void *def_realloc_func2(void *opaque, void *address, size_t items, size_t size) { (void)opaque, (void)address, (void)items, (void)size; return MZ_REALLOC2(address, items * size); }
 
 const char *mz_version(void)
 {
@@ -1053,8 +1072,8 @@ int mz_deflateInit2(mz_streamp pStream, int level, int method, int window_bits, 
   pStream->reserved = 0;
   pStream->total_in = 0;
   pStream->total_out = 0;
-  if (!pStream->zalloc) pStream->zalloc = def_alloc_func;
-  if (!pStream->zfree) pStream->zfree = def_free_func;
+  if (!pStream->zalloc) pStream->zalloc = def_alloc_func2;
+  if (!pStream->zfree) pStream->zfree = def_free_func2;
 
   pComp = (tdefl_compressor *)pStream->zalloc(pStream->opaque, 1, sizeof(tdefl_compressor));
   if (!pComp)
@@ -2750,7 +2769,7 @@ mz_uint32 tdefl_get_adler32(tdefl_compressor *d)
 mz_bool tdefl_compress_mem_to_output(const void *pBuf, size_t buf_len, tdefl_put_buf_func_ptr pPut_buf_func, void *pPut_buf_user, int flags)
 {
   tdefl_compressor *pComp; mz_bool succeeded; if (((buf_len) && (!pBuf)) || (!pPut_buf_func)) return MZ_FALSE;
-  pComp = (tdefl_compressor*)MZ_MALLOC(sizeof(tdefl_compressor)); if (!pComp) return MZ_FALSE;
+  pComp = (tdefl_compressor*)MZ_MALLOC2(sizeof(tdefl_compressor)); if (!pComp) return MZ_FALSE;
   succeeded = (tdefl_init(pComp, pPut_buf_func, pPut_buf_user, flags) == TDEFL_STATUS_OKAY);
   succeeded = succeeded && (tdefl_compress_buffer(pComp, pBuf, buf_len, TDEFL_FINISH) == TDEFL_STATUS_DONE);
   MZ_FREE(pComp); return succeeded;
@@ -2771,7 +2790,7 @@ static mz_bool tdefl_output_buffer_putter(const void *pBuf, int len, void *pUser
   {
     size_t new_capacity = p->m_capacity; mz_uint8 *pNew_buf; if (!p->m_expandable) return MZ_FALSE;
     do { new_capacity = MZ_MAX(128U, new_capacity << 1U); } while (new_size > new_capacity);
-    pNew_buf = (mz_uint8*)MZ_REALLOC(p->m_pBuf, new_capacity); if (!pNew_buf) return MZ_FALSE;
+    pNew_buf = (mz_uint8*)MZ_REALLOC2(p->m_pBuf, new_capacity); if (!pNew_buf) return MZ_FALSE;
     p->m_pBuf = pNew_buf; p->m_capacity = new_capacity;
   }
   memcpy((mz_uint8*)p->m_pBuf + p->m_size, pBuf, len); p->m_size = new_size;
@@ -2827,9 +2846,9 @@ void *tdefl_write_image_to_png_file_in_memory_ex(const void *pImage, int w, int 
 {
   // Using a local copy of this array here in case MINIZ_NO_ZLIB_APIS was defined.
   static const mz_uint s_tdefl_png_num_probes[11] = { 0, 1, 6, 32,  16, 32, 128, 256,  512, 768, 1500 };
-  tdefl_compressor *pComp = (tdefl_compressor *)MZ_MALLOC(sizeof(tdefl_compressor)); tdefl_output_buffer out_buf; int i, bpl = w * num_chans, y, z; mz_uint32 c; *pLen_out = 0;
+  tdefl_compressor *pComp = (tdefl_compressor *)MZ_MALLOC2(sizeof(tdefl_compressor)); tdefl_output_buffer out_buf; int i, bpl = w * num_chans, y, z; mz_uint32 c; *pLen_out = 0;
   if (!pComp) return NULL;
-  MZ_CLEAR_OBJ(out_buf); out_buf.m_expandable = MZ_TRUE; out_buf.m_capacity = 57+MZ_MAX(64, (1+bpl)*h); if (NULL == (out_buf.m_pBuf = (mz_uint8*)MZ_MALLOC(out_buf.m_capacity))) { MZ_FREE(pComp); return NULL; }
+  MZ_CLEAR_OBJ(out_buf); out_buf.m_expandable = MZ_TRUE; out_buf.m_capacity = 57+MZ_MAX(64, (1+bpl)*h); if (NULL == (out_buf.m_pBuf = (mz_uint8*)MZ_MALLOC2(out_buf.m_capacity))) { MZ_FREE(pComp); return NULL; }
   // write dummy header
   for (z = 41; z; --z) tdefl_output_buffer_putter(&z, 1, &out_buf);
   // compress image data
@@ -4007,9 +4026,9 @@ mz_bool mz_zip_writer_init(mz_zip_archive *pZip, mz_uint64 existing_size)
       return MZ_FALSE;
   }
 
-  if (!pZip->m_pAlloc) pZip->m_pAlloc = def_alloc_func;
-  if (!pZip->m_pFree) pZip->m_pFree = def_free_func;
-  if (!pZip->m_pRealloc) pZip->m_pRealloc = def_realloc_func;
+  if (!pZip->m_pAlloc) pZip->m_pAlloc = def_alloc_func2;
+  if (!pZip->m_pFree) pZip->m_pFree = def_free_fun2c;
+  if (!pZip->m_pRealloc) pZip->m_pRealloc = def_realloc_func2;
 
   pZip->m_zip_mode = MZ_ZIP_MODE_WRITING;
   pZip->m_archive_size = existing_size;
