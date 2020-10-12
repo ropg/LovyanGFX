@@ -155,10 +155,12 @@
      uses the 64-bit variants: fopen64(), stat64(), etc. Otherwise you won't be able to process large files
      (i.e. 32-bit stat() fails for me on files > 0x7FFFFFFF bytes).
 */
+
 #ifndef MINIZ_HEADER_INCLUDED
 #define MINIZ_HEADER_INCLUDED
 
 #include <stdlib.h>
+#include <esp32-hal-log.h>
 
 // Defines to completely disable specific portions of miniz.c:
 // If all macros here are defined the only functionality remaining will be CRC-32, adler-32, tinfl, and tdefl.
@@ -779,7 +781,7 @@ struct tinfl_decompressor_tag
 // ------------------- Low-level Compression API Definitions
 
 // Set TDEFL_LESS_MEMORY to 1 to use less memory (compression will be slightly slower, and raw/dynamic blocks will be output more frequently).
-#define TDEFL_LESS_MEMORY 0
+#define TDEFL_LESS_MEMORY 1
 
 // tdefl_init() compression flags logically OR'd together (low 12 bits contain the max. number of probes per dictionary search):
 // TDEFL_DEFAULT_MAX_PROBES: The compressor defaults to 128 dictionary probes per dictionary search. 0=Huffman only, 1=Huffman+LZ (fastest/crap compression), 4095=Huffman+LZ (slowest/best compression).
@@ -837,13 +839,17 @@ size_t tdefl_compress_mem_to_mem(void *pOut_buf, size_t out_buf_len, const void 
 void *tdefl_write_image_to_png_file_in_memory_ex(const void *pImage, int w, int h, int num_chans, size_t *pLen_out, mz_uint level, mz_bool flip);
 void *tdefl_write_image_to_png_file_in_memory(const void *pImage, int w, int h, int num_chans, size_t *pLen_out);
 
+typedef mz_uint8 *(*tdefl_get_png_row_func)(mz_uint8 *pImage, mz_bool flip, int w, int h, int y, int bpl, void *target);
+mz_uint8 *tdefl_get_png_row_default( mz_uint8 *pImage, mz_bool flip, int w, int h, int y, int bpl, void *target );
+void     *tdefl_write_image_to_png_file_in_memory_ex_with_cb(const void *pImage, int w, int h, int num_chans, size_t *pLen_out, mz_uint level, mz_bool flip, tdefl_get_png_row_func cb, void *target);
+
 // Output stream interface. The compressor uses this interface to write compressed data. It'll typically be called TDEFL_OUT_BUF_SIZE at a time.
 typedef mz_bool (*tdefl_put_buf_func_ptr)(const void* pBuf, int len, void *pUser);
 
 // tdefl_compress_mem_to_output() compresses a block to an output stream. The above helpers use this function internally.
 mz_bool tdefl_compress_mem_to_output(const void *pBuf, size_t buf_len, tdefl_put_buf_func_ptr pPut_buf_func, void *pPut_buf_user, int flags);
 
-enum { TDEFL_MAX_HUFF_TABLES = 3, TDEFL_MAX_HUFF_SYMBOLS_0 = 288, TDEFL_MAX_HUFF_SYMBOLS_1 = 32, TDEFL_MAX_HUFF_SYMBOLS_2 = 19, TDEFL_LZ_DICT_SIZE = 32768, TDEFL_LZ_DICT_SIZE_MASK = TDEFL_LZ_DICT_SIZE - 1, TDEFL_MIN_MATCH_LEN = 3, TDEFL_MAX_MATCH_LEN = 258 };
+enum { TDEFL_MAX_HUFF_TABLES = 3, TDEFL_MAX_HUFF_SYMBOLS_0 = 288, TDEFL_MAX_HUFF_SYMBOLS_1 = 32, TDEFL_MAX_HUFF_SYMBOLS_2 = 19, TDEFL_LZ_DICT_SIZE = 4096, TDEFL_LZ_DICT_SIZE_MASK = TDEFL_LZ_DICT_SIZE - 1, TDEFL_MIN_MATCH_LEN = 3, TDEFL_MAX_MATCH_LEN = 258 };
 
 // TDEFL_OUT_BUF_SIZE MUST be large enough to hold a single entire compressed output block (using static/fixed Huffman codes).
 #if TDEFL_LESS_MEMORY
@@ -946,35 +952,22 @@ typedef unsigned char mz_validate_uint64[sizeof(mz_uint64)==8 ? 1 : -1];
 #define MZ_ASSERT(x) assert(x)
 
 #ifdef MINIZ_NO_MALLOC
-  #define MINIZ_NO_COMPRESSION
-  // for reading
   #define MZ_MALLOC(x) NULL
   #define MZ_FREE(x) (void)x, ((void)0)
   #define MZ_REALLOC(p, x) NULL
-  // for writing
-  #define MZ_MALLOC2(x) NULL
-  #define MZ_FREE2(x) (void)x, ((void)0)
-  #define MZ_REALLOC2(p, x) NULL
 #else
-  // for reading
-  #define MZ_MALLOC(x) malloc(x)
-  #define MZ_FREE(x) free(x)
-  #define MZ_REALLOC(p, x) realloc(p, x)
-
   #ifdef BOARD_HAS_PSRAM
-    // enable writing only if psram found
+    //#define MINIZ_NO_COMPRESSION
     #include "esp_spiram.h"
     #include "soc/efuse_reg.h"
     #include "esp_heap_caps.h"
-    #define MZ_MALLOC2(x) heap_caps_malloc(x, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
-    #define MZ_FREE2(x) free(x)
-    #define MZ_REALLOC2(p, x) heap_caps_realloc(p, x, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+    #define MZ_MALLOC(x) heap_caps_malloc(x, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+    #define MZ_FREE(x) free(x)
+    #define MZ_REALLOC(p, x) heap_caps_realloc(p, x, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
   #else
-    // disable writing and save some ram too
-    #define MINIZ_NO_COMPRESSION
-    #define MZ_MALLOC2(x) NULL
-    #define MZ_FREE2(x) (void)x, ((void)0)
-    #define MZ_REALLOC2(p, x) NULL
+    #define MZ_MALLOC(x) malloc(x)
+    #define MZ_FREE(x) free(x)
+    #define MZ_REALLOC(p, x) realloc(p, x)
   #endif
 #endif
 
@@ -1037,14 +1030,9 @@ void mz_free(void *p)
 
 #ifndef MINIZ_NO_ZLIB_APIS
 
-// for reading
 static void *def_alloc_func(void *opaque, size_t items, size_t size) { (void)opaque, (void)items, (void)size; return MZ_MALLOC(items * size); }
 static void def_free_func(void *opaque, void *address) { (void)opaque, (void)address; MZ_FREE(address); }
 static void *def_realloc_func(void *opaque, void *address, size_t items, size_t size) { (void)opaque, (void)address, (void)items, (void)size; return MZ_REALLOC(address, items * size); }
-// for writing
-static void *def_alloc_func2(void *opaque, size_t items, size_t size) { (void)opaque, (void)items, (void)size; return MZ_MALLOC2(items * size); }
-static void def_free_func2(void *opaque, void *address) { (void)opaque, (void)address; MZ_FREE2(address); }
-static void *def_realloc_func2(void *opaque, void *address, size_t items, size_t size) { (void)opaque, (void)address, (void)items, (void)size; return MZ_REALLOC2(address, items * size); }
 
 const char *mz_version(void)
 {
@@ -1072,8 +1060,8 @@ int mz_deflateInit2(mz_streamp pStream, int level, int method, int window_bits, 
   pStream->reserved = 0;
   pStream->total_in = 0;
   pStream->total_out = 0;
-  if (!pStream->zalloc) pStream->zalloc = def_alloc_func2;
-  if (!pStream->zfree) pStream->zfree = def_free_func2;
+  if (!pStream->zalloc) pStream->zalloc = def_alloc_func;
+  if (!pStream->zfree) pStream->zfree = def_free_func;
 
   pComp = (tdefl_compressor *)pStream->zalloc(pStream->opaque, 1, sizeof(tdefl_compressor));
   if (!pComp)
@@ -1780,8 +1768,10 @@ int tinfl_decompress_mem_to_callback(const void *pIn_buf, size_t *pIn_buf_size, 
   int result = 0;
   tinfl_decompressor decomp;
   mz_uint8 *pDict = (mz_uint8*)MZ_MALLOC(TINFL_LZ_DICT_SIZE); size_t in_buf_ofs = 0, dict_ofs = 0;
-  if (!pDict)
+  if (!pDict) {
+    log_e("Can't decompress mem to callback");
     return TINFL_STATUS_FAILED;
+  }
   tinfl_init(&decomp);
   for ( ; ; )
   {
@@ -2358,7 +2348,12 @@ static MZ_FORCEINLINE void tdefl_find_match(tdefl_compressor *d, mz_uint lookahe
         if ((d->m_dict[probe_pos + match_len] == c0) && (d->m_dict[probe_pos + match_len - 1] == c1)) break;
       TDEFL_PROBE; TDEFL_PROBE; TDEFL_PROBE;
     }
-    if (!dist) break; p = s; q = d->m_dict + probe_pos; for (probe_len = 0; probe_len < max_match_len; probe_len++) if (*p++ != *q++) break;
+    if (!dist) break;
+    p = s; q = d->m_dict + probe_pos;
+    for (probe_len = 0; probe_len < max_match_len; probe_len++)
+    {
+      if (*p++ != *q++) break;
+    }
     if (probe_len > match_len)
     {
       *pMatch_dist = dist; if ((*pMatch_len = match_len = probe_len) == max_match_len) return;
@@ -2769,7 +2764,10 @@ mz_uint32 tdefl_get_adler32(tdefl_compressor *d)
 mz_bool tdefl_compress_mem_to_output(const void *pBuf, size_t buf_len, tdefl_put_buf_func_ptr pPut_buf_func, void *pPut_buf_user, int flags)
 {
   tdefl_compressor *pComp; mz_bool succeeded; if (((buf_len) && (!pBuf)) || (!pPut_buf_func)) return MZ_FALSE;
-  pComp = (tdefl_compressor*)MZ_MALLOC2(sizeof(tdefl_compressor)); if (!pComp) return MZ_FALSE;
+  pComp = (tdefl_compressor*)MZ_MALLOC(sizeof(tdefl_compressor)); if (!pComp) return MZ_FALSE;
+  if (!pComp) {
+    log_e("Can't decompress mem to output");
+  }
   succeeded = (tdefl_init(pComp, pPut_buf_func, pPut_buf_user, flags) == TDEFL_STATUS_OKAY);
   succeeded = succeeded && (tdefl_compress_buffer(pComp, pBuf, buf_len, TDEFL_FINISH) == TDEFL_STATUS_DONE);
   MZ_FREE(pComp); return succeeded;
@@ -2790,7 +2788,7 @@ static mz_bool tdefl_output_buffer_putter(const void *pBuf, int len, void *pUser
   {
     size_t new_capacity = p->m_capacity; mz_uint8 *pNew_buf; if (!p->m_expandable) return MZ_FALSE;
     do { new_capacity = MZ_MAX(128U, new_capacity << 1U); } while (new_size > new_capacity);
-    pNew_buf = (mz_uint8*)MZ_REALLOC2(p->m_pBuf, new_capacity); if (!pNew_buf) return MZ_FALSE;
+    pNew_buf = (mz_uint8*)MZ_REALLOC(p->m_pBuf, new_capacity); if (!pNew_buf) return MZ_FALSE;
     p->m_pBuf = pNew_buf; p->m_capacity = new_capacity;
   }
   memcpy((mz_uint8*)p->m_pBuf + p->m_size, pBuf, len); p->m_size = new_size;
@@ -2839,22 +2837,53 @@ mz_uint tdefl_create_comp_flags_from_zip_params(int level, int window_bits, int 
 #pragma warning (disable:4204) // nonstandard extension used : non-constant aggregate initializer (also supported by GNU C and C99, so no big deal)
 #endif
 
+
+
+//mz_uint8 *tdefl_get_png_row( mz_uint8 *pImage, mz_bool flip, int w, int h, int y, int bpl, void * target );
+
+
+mz_uint8 *tdefl_get_png_row_default( mz_uint8 *pImage, mz_bool flip, int w, int h, int y, int bpl, void *target ) {
+  (void)target; // unused here
+  return (mz_uint8*)pImage + (flip ? (h - 1 - y) : y) * bpl;
+}
+
 // Simple PNG writer function by Alex Evans, 2011. Released into the public domain: https://gist.github.com/908299, more context at
 // http://altdevblogaday.org/2011/04/06/a-smaller-jpg-encoder/.
 // This is actually a modification of Alex's original code so PNG files generated by this function pass pngcheck.
-void *tdefl_write_image_to_png_file_in_memory_ex(const void *pImage, int w, int h, int num_chans, size_t *pLen_out, mz_uint level, mz_bool flip)
+void *tdefl_write_image_to_png_file_in_memory_ex(const void *pImage, int w, int h, int num_chans, size_t *pLen_out, mz_uint level, mz_bool flip) {
+  return tdefl_write_image_to_png_file_in_memory_ex_with_cb(pImage, w, h, num_chans, pLen_out, level, flip, &tdefl_get_png_row_default, NULL);
+}
+
+void *tdefl_write_image_to_png_file_in_memory_ex_with_cb(const void *pImage, int w, int h, int num_chans, size_t *pLen_out, mz_uint level, mz_bool flip, tdefl_get_png_row_func cb, void *target)
 {
   // Using a local copy of this array here in case MINIZ_NO_ZLIB_APIS was defined.
+  tdefl_get_png_row_func get_row_func = cb;
   static const mz_uint s_tdefl_png_num_probes[11] = { 0, 1, 6, 32,  16, 32, 128, 256,  512, 768, 1500 };
-  tdefl_compressor *pComp = (tdefl_compressor *)MZ_MALLOC2(sizeof(tdefl_compressor)); tdefl_output_buffer out_buf; int i, bpl = w * num_chans, y, z; mz_uint32 c; *pLen_out = 0;
-  if (!pComp) return NULL;
-  MZ_CLEAR_OBJ(out_buf); out_buf.m_expandable = MZ_TRUE; out_buf.m_capacity = 57+MZ_MAX(64, (1+bpl)*h); if (NULL == (out_buf.m_pBuf = (mz_uint8*)MZ_MALLOC2(out_buf.m_capacity))) { MZ_FREE(pComp); return NULL; }
+  tdefl_compressor *pComp = (tdefl_compressor *)MZ_MALLOC(sizeof(tdefl_compressor)); tdefl_output_buffer out_buf; int i, bpl = w * num_chans, y, z; mz_uint32 c; *pLen_out = 0;
+  if (!pComp){
+    log_e("Unable to malloc %d bytes", sizeof(tdefl_compressor) );
+    return NULL;
+  }
+  MZ_CLEAR_OBJ(out_buf); out_buf.m_expandable = MZ_TRUE; out_buf.m_capacity = 57+MZ_MAX(64, (1+bpl)*h);
+  if (NULL == (out_buf.m_pBuf = (mz_uint8*)MZ_MALLOC(out_buf.m_capacity))) {
+    log_n("output buffer can't fit in ram");
+    MZ_FREE(pComp);
+    return NULL;
+  }
   // write dummy header
   for (z = 41; z; --z) tdefl_output_buffer_putter(&z, 1, &out_buf);
   // compress image data
   tdefl_init(pComp, tdefl_output_buffer_putter, &out_buf, s_tdefl_png_num_probes[MZ_MIN(10, level)] | TDEFL_WRITE_ZLIB_HEADER);
-  for (y = 0; y < h; ++y) { tdefl_compress_buffer(pComp, &z, 1, TDEFL_NO_FLUSH); tdefl_compress_buffer(pComp, (mz_uint8*)pImage + (flip ? (h - 1 - y) : y) * bpl, bpl, TDEFL_NO_FLUSH); }
-  if (tdefl_compress_buffer(pComp, NULL, 0, TDEFL_FINISH) != TDEFL_STATUS_DONE) { MZ_FREE(pComp); MZ_FREE(out_buf.m_pBuf); return NULL; }
+  for (y = 0; y < h; ++y) {
+    tdefl_compress_buffer(pComp, &z, 1, TDEFL_NO_FLUSH);
+    tdefl_compress_buffer(pComp, get_row_func( (mz_uint8*)pImage, flip, w, h, y, bpl, target ), bpl, TDEFL_NO_FLUSH);
+  }
+  if (tdefl_compress_buffer(pComp, NULL, 0, TDEFL_FINISH) != TDEFL_STATUS_DONE) {
+    log_e("tdefl_compress_buffer failed! (TDEFL_FINISH != TDEFL_STATUS_DONE");
+    MZ_FREE(pComp);
+    MZ_FREE(out_buf.m_pBuf);
+    return NULL;
+  }
   // write real header
   *pLen_out = out_buf.m_size-41;
   {
@@ -2866,7 +2895,13 @@ void *tdefl_write_image_to_png_file_in_memory_ex(const void *pImage, int w, int 
     memcpy(out_buf.m_pBuf, pnghdr, 41);
   }
   // write footer (IDAT CRC-32, followed by IEND chunk)
-  if (!tdefl_output_buffer_putter("\0\0\0\0\0\0\0\0\x49\x45\x4e\x44\xae\x42\x60\x82", 16, &out_buf)) { *pLen_out = 0; MZ_FREE(pComp); MZ_FREE(out_buf.m_pBuf); return NULL; }
+  if (!tdefl_output_buffer_putter("\0\0\0\0\0\0\0\0\x49\x45\x4e\x44\xae\x42\x60\x82", 16, &out_buf)) {
+    log_e("tdefl_output_buffer_putter failed!");
+    *pLen_out = 0;
+    MZ_FREE(pComp);
+    MZ_FREE(out_buf.m_pBuf);
+    return NULL;
+  }
   c = (mz_uint32)mz_crc32(MZ_CRC32_INIT,out_buf.m_pBuf+41-4, *pLen_out+4); for (i=0; i<4; ++i, c<<=8) (out_buf.m_pBuf+out_buf.m_size-16)[i] = (mz_uint8)(c >> 24);
   // compute final size of file, grab compressed data buffer and return
   *pLen_out += 57; MZ_FREE(pComp); return out_buf.m_pBuf;
@@ -4026,9 +4061,9 @@ mz_bool mz_zip_writer_init(mz_zip_archive *pZip, mz_uint64 existing_size)
       return MZ_FALSE;
   }
 
-  if (!pZip->m_pAlloc) pZip->m_pAlloc = def_alloc_func2;
-  if (!pZip->m_pFree) pZip->m_pFree = def_free_fun2c;
-  if (!pZip->m_pRealloc) pZip->m_pRealloc = def_realloc_func2;
+  if (!pZip->m_pAlloc) pZip->m_pAlloc = def_alloc_func;
+  if (!pZip->m_pFree) pZip->m_pFree = def_free_func;
+  if (!pZip->m_pRealloc) pZip->m_pRealloc = def_realloc_func;
 
   pZip->m_zip_mode = MZ_ZIP_MODE_WRITING;
   pZip->m_archive_size = existing_size;
@@ -4932,6 +4967,7 @@ void *mz_zip_extract_archive_file_to_heap(const char *pZip_filename, const char 
 #endif
 
 #endif // MINIZ_HEADER_FILE_ONLY
+
 /*
   This is free and unencumbered software released into the public domain.
 
