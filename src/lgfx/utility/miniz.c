@@ -191,7 +191,6 @@
 // functions (such as tdefl_compress_mem_to_heap() and tinfl_decompress_mem_to_heap()) won't work.
 //#define MINIZ_NO_MALLOC
 
-//
 //#define MINIZ_NO_COMPRESSION
 
 
@@ -957,7 +956,6 @@ typedef unsigned char mz_validate_uint64[sizeof(mz_uint64)==8 ? 1 : -1];
   #define MZ_REALLOC(p, x) NULL
 #else
   #ifdef BOARD_HAS_PSRAM
-    //#define MINIZ_NO_COMPRESSION
     #include "esp_spiram.h"
     #include "soc/efuse_reg.h"
     #include "esp_heap_caps.h"
